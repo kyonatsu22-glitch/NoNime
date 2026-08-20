@@ -8,7 +8,7 @@ app.use(cors());
 // Endpoint Ongoing Anime menggunakan Jikan API (MyAnimeList)
 app.get('/api/ongoing', async (req, res) => {
   try {
-    const response = await axios.get('https://api.jikan.moe/v4/seasons/now?limit=25', {
+    const response = await axios.get('https://api.jikan.moe/v4/seasons/now?limit=500', {
       timeout: 10000
     });
 
