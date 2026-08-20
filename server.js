@@ -5,10 +5,10 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Endpoint Ongoing Anime (Limit 25 agar respons instan dan bebas 504 Timeout)
+// Endpoint Ongoing Anime (Limit 85 agar respons instan dan bebas 504 Timeout)
 app.get('/api/ongoing', async (req, res) => {
   try {
-    const response = await axios.get('https://api.jikan.moe/v4/seasons/now?limit=100', {
+    const response = await axios.get('https://api.jikan.moe/v4/seasons/now?limit=85', {
       timeout: 8000
     });
 
