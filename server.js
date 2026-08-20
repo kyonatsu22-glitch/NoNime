@@ -5,32 +5,42 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// 1. ENDPOINT ONGOING ANIME (60 Anime)
-app.get('/api/ongoing', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 60;
+const ANILIST_URL = 'https://graphql.anilist.co';
 
-    const query = `
-      query ($perPage: Int) {
-        Page(page: 1, perPage: $perPage) {
-          media(status: RELEASING, type: ANIME, sort: POPULARITY_DESC) {
-            id
-            title { romaji english }
-            coverImage { large }
-            episodes
-            nextAiringEpisode { episode }
-          }
+// Helper mengambil 60 anime (Menggabungkan Page 1 & Page 2 karena batas AniList max 50/page)
+async function fetchAniList(status, limit = 60) {
+  const query = `
+    query ($page: Int, $perPage: Int) {
+      Page(page: $page, perPage: $perPage) {
+        media(status: ${status}, type: ANIME, sort: POPULARITY_DESC) {
+          id
+          title { romaji english }
+          coverImage { large }
+          episodes
+          nextAiringEpisode { episode }
+          startDate { year month day }
         }
       }
-    `;
+    }
+  `;
 
-    const response = await axios.post('https://graphql.anilist.co', {
-      query, variables: { perPage: limit }
-    }, { timeout: 8000 });
+  const req1 = axios.post(ANILIST_URL, { query, variables: { page: 1, perPage: 50 } }, { timeout: 8000 });
+  const req2 = limit > 50 
+    ? axios.post(ANILIST_URL, { query, variables: { page: 2, perPage: limit - 50 } }, { timeout: 8000 })
+    : null;
 
-    const animeList = response.data?.data?.Page?.media || [];
+  const [res1, res2] = await Promise.all([req1, req2]);
+  const list1 = res1.data?.data?.Page?.media || [];
+  const list2 = res2 ? (res2.data?.data?.Page?.media || []) : [];
+  
+  return [...list1, ...list2];
+}
 
-    const results = animeList.map(item => ({
+// 1. ONGOING ANIME (PAS 60 ANIME)
+app.get(['/api/ongoing', '/api/ongoing/page/:page'], async (req, res) => {
+  try {
+    const rawData = await fetchAniList('RELEASING', 60);
+    const results = rawData.map(item => ({
       id: item.id.toString(),
       endpoint: item.id.toString(),
       title: item.title.english || item.title.romaji,
@@ -48,39 +58,22 @@ app.get('/api/ongoing', async (req, res) => {
   }
 });
 
-// 2. ENDPOINT UPCOMING ANIME (60 Anime)
-app.get('/api/upcoming', async (req, res) => {
+// 2. UPCOMING ANIME (PAS 60 ANIME)
+app.get(['/api/upcoming', '/api/upcoming/page/:page'], async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 60;
-
-    const query = `
-      query ($perPage: Int) {
-        Page(page: 1, perPage: $perPage) {
-          media(status: NOT_YET_RELEASED, type: ANIME, sort: POPULARITY_DESC) {
-            id
-            title { romaji english }
-            coverImage { large }
-            startDate { year month day }
-          }
-        }
-      }
-    `;
-
-    const response = await axios.post('https://graphql.anilist.co', {
-      query, variables: { perPage: limit }
-    }, { timeout: 8000 });
-
-    const animeList = response.data?.data?.Page?.media || [];
-
-    const results = animeList.map(item => ({
-      id: item.id.toString(),
-      endpoint: item.id.toString(),
-      title: item.title.english || item.title.romaji,
-      poster: item.coverImage.large || '',
-      posterUrl: item.coverImage.large || '',
-      thumb: item.coverImage.large || '',
-      episode: item.startDate?.year ? `Rilis: ${item.startDate.year}` : 'Segera Hadir'
-    }));
+    const rawData = await fetchAniList('NOT_YET_RELEASED', 60);
+    const results = rawData.map(item => {
+      const rilis = item.startDate?.year ? `Rilis: ${item.startDate.year}` : 'Segera Hadir';
+      return {
+        id: item.id.toString(),
+        endpoint: item.id.toString(),
+        title: item.title.english || item.title.romaji,
+        poster: item.coverImage.large || '',
+        posterUrl: item.coverImage.large || '',
+        thumb: item.coverImage.large || '',
+        episode: rilis
+      };
+    });
 
     res.json({ status: true, total: results.length, data: results });
   } catch (error) {
@@ -88,10 +81,10 @@ app.get('/api/upcoming', async (req, res) => {
   }
 });
 
-// 3. ENDPOINT DETAIL ANIME (Anti Fail: Multi-Route & Multi-Key)
+// 3. DETAIL ANIME (Anti Crash: Menyediakan Format Teks & Array Sekaligus)
 const handleDetail = async (req, res) => {
   try {
-    let rawId = req.params.id || req.query.id || req.query.url || req.query.endpoint || '';
+    let rawId = req.params.id || req.query.id || req.query.endpoint || req.query.url || '';
     const cleanIdMatch = rawId.toString().match(/\d+/);
     const animeId = cleanIdMatch ? parseInt(cleanIdMatch[0]) : null;
 
@@ -116,10 +109,7 @@ const handleDetail = async (req, res) => {
       }
     `;
 
-    const response = await axios.post('https://graphql.anilist.co', {
-      query, variables: { id: animeId }
-    }, { timeout: 8000 });
-
+    const response = await axios.post(ANILIST_URL, { query, variables: { id: animeId } }, { timeout: 8000 });
     const anime = response.data?.data?.Media;
     if (!anime) throw new Error("Anime tidak ditemukan");
 
@@ -133,34 +123,45 @@ const handleDetail = async (req, res) => {
         id: `${anime.id}-ep-${i}`,
         endpoint: `${anime.id}-ep-${i}`,
         title: `Episode ${i}`,
+        judul: `Episode ${i}`,
         episode: `Episode ${i}`,
         date: 'Terbaru',
+        uploaded: 'Terbaru',
         streamUrl: 'https://www.youtube.com/embed/dQw4w9WgXcQ',
         url: 'https://www.youtube.com/embed/dQw4w9WgXcQ'
       });
     }
 
-    const detailData = {
+    const genresList = anime.genres || [];
+    const genresString = genresList.join(', ');
+    const synopsisText = anime.description ? anime.description.replace(/<[^>]*>?/gm, '') : 'Tidak ada sinopsis';
+
+    const detailObj = {
       id: anime.id.toString(),
       endpoint: anime.id.toString(),
       title: anime.title.english || anime.title.romaji,
+      judul: anime.title.english || anime.title.romaji,
       poster: anime.coverImage.large,
       posterUrl: anime.coverImage.large,
       thumb: anime.coverImage.large,
       bannerUrl: anime.bannerImage || anime.coverImage.large,
-      synopsis: anime.description ? anime.description.replace(/<[^>]*>?/gm, '') : 'Tidak ada sinopsis',
-      sinopsis: anime.description ? anime.description.replace(/<[^>]*>?/gm, '') : 'Tidak ada sinopsis',
+      synopsis: synopsisText,
+      sinopsis: synopsisText,
+      description: synopsisText,
       status: anime.status || 'Ongoing',
+      type: 'TV',
       rating: anime.averageScore ? `${anime.averageScore} / 100` : 'N/A',
-      genres: anime.genres || [],
-      genre: anime.genres || [],
+      score: anime.averageScore ? `${anime.averageScore}` : '8.0',
+      genres: genresList,
+      genre: genresString,
       episodes: episodeList,
-      episode_list: episodeList
+      episode_list: episodeList,
+      episodeList: episodeList
     };
 
     res.json({
       status: true,
-      data: detailData
+      data: detailObj
     });
 
   } catch (error) {
@@ -171,14 +172,16 @@ const handleDetail = async (req, res) => {
 app.get('/api/detail', handleDetail);
 app.get('/api/detail/:id', handleDetail);
 app.get('/api/anime/:id', handleDetail);
+app.get('/api/anime/detail/:id', handleDetail);
 
-// 4. ENDPOINT STREAM
-app.get(['/api/stream', '/api/episode', '/api/episode/:id'], (req, res) => {
+// 4. STREAM / EPISODE
+app.get(['/api/stream', '/api/episode', '/api/episode/:id', '/api/stream/:id'], (req, res) => {
   res.json({
     status: true,
     data: {
       streamUrl: 'https://www.youtube.com/embed/dQw4w9WgXcQ',
       url: 'https://www.youtube.com/embed/dQw4w9WgXcQ',
+      link: 'https://www.youtube.com/embed/dQw4w9WgXcQ',
       downloadLinks: [
         { quality: '360p', url: 'https://example.com/download/360p' },
         { quality: '720p', url: 'https://example.com/download/720p' },
