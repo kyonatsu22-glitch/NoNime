@@ -7,12 +7,12 @@ app.use(cors());
 
 const ANILIST_URL = 'https://graphql.anilist.co';
 
-// Helper mengambil data anime DENGAN FILTER ID UNIK (Anti Duplikat)
+// Helper mengambil data anime khusus NON-HENTAI (isAdult: false) & Anti Duplikat
 async function fetchUniqueAniList(status, limit) {
   const query = `
     query ($page: Int, $perPage: Int) {
       Page(page: $page, perPage: $perPage) {
-        media(status: ${status}, type: ANIME, sort: POPULARITY_DESC) {
+        media(status: ${status}, type: ANIME, isAdult: false, sort: POPULARITY_DESC) {
           id
           title { romaji english }
           coverImage { large }
@@ -34,7 +34,6 @@ async function fetchUniqueAniList(status, limit) {
     const list1 = res1.data?.data?.Page?.media || [];
     const list2 = res2 ? (res2.data?.data?.Page?.media || []) : [];
 
-    // Menyaring duplikat berdasarkan ID unik
     const uniqueMap = new Map();
     [...list1, ...list2].forEach(item => {
       if (item && item.id && !uniqueMap.has(item.id)) {
@@ -48,7 +47,7 @@ async function fetchUniqueAniList(status, limit) {
   }
 }
 
-// 1. ENDPOINT ONGOING (70 Anime Unik & Berbeda)
+// 1. ENDPOINT ONGOING (70 Anime TV Resmi & Non-Hentai)
 app.get(['/api/ongoing', '/api/ongoing/page/:page'], async (req, res) => {
   try {
     const rawData = await fetchUniqueAniList('RELEASING', 70);
@@ -71,7 +70,7 @@ app.get(['/api/ongoing', '/api/ongoing/page/:page'], async (req, res) => {
   }
 });
 
-// 2. ENDPOINT UPCOMING (30 Anime Unik & Berbeda)
+// 2. ENDPOINT UPCOMING (30 Anime Murni Akan Datang)
 app.get(['/api/upcoming', '/api/upcoming/page/:page'], async (req, res) => {
   try {
     const rawData = await fetchUniqueAniList('NOT_YET_RELEASED', 30);
@@ -98,57 +97,84 @@ app.get(['/api/upcoming', '/api/upcoming/page/:page'], async (req, res) => {
   }
 });
 
-// 3. ENDPOINT DETAIL ANIME (Format Lengkap)
+// 3. ENDPOINT DETAIL ANIME (Pencarian Fleksibel ID / Judul -> Anti Cowboy Bebop Bug)
 const handleDetail = async (req, res) => {
   try {
-    let rawId = req.params.id || req.query.id || req.query.endpoint || req.query.url || req.query.slug || '';
-    const cleanIdMatch = rawId.toString().match(/\d+/);
-    const animeId = cleanIdMatch ? parseInt(cleanIdMatch[0]) : 1;
+    let rawParam = req.params.id || req.query.id || req.query.endpoint || req.query.url || req.query.slug || '';
+    rawParam = decodeURIComponent(rawParam).trim();
 
-    const query = `
-      query ($id: Int) {
-        Media (id: $id, type: ANIME) {
-          id
-          title { romaji english }
-          coverImage { large }
-          bannerImage
-          description
-          status
-          episodes
-          nextAiringEpisode { episode }
-          genres
-          averageScore
-          studios { nodes { name } }
+    const cleanIdMatch = rawParam.match(/\d+/);
+    const numericId = cleanIdMatch ? parseInt(cleanIdMatch[0]) : null;
+
+    let query = '';
+    let variables = {};
+
+    if (numericId) {
+      // Cari berdasarkan ID Angka AniList
+      query = `
+        query ($id: Int) {
+          Media (id: $id, type: ANIME, isAdult: false) {
+            id
+            title { romaji english }
+            coverImage { large }
+            bannerImage
+            description
+            status
+            episodes
+            nextAiringEpisode { episode }
+            genres
+            averageScore
+            studios { nodes { name } }
+          }
         }
-      }
-    `;
-
-    let anime = null;
-    try {
-      const response = await axios.post(ANILIST_URL, { query, variables: { id: animeId } }, { timeout: 8000 });
-      anime = response.data?.data?.Media;
-    } catch (e) {
-      console.log('Fetching fallback detail');
+      `;
+      variables = { id: numericId };
+    } else {
+      // Jika Flutter mengirim Judul/Teks, cari berdasarkan Nama Anime
+      query = `
+        query ($search: String) {
+          Media (search: $search, type: ANIME, isAdult: false) {
+            id
+            title { romaji english }
+            coverImage { large }
+            bannerImage
+            description
+            status
+            episodes
+            nextAiringEpisode { episode }
+            genres
+            averageScore
+            studios { nodes { name } }
+          }
+        }
+      `;
+      variables = { search: rawParam || "Anime" };
     }
 
-    const titleText = anime ? (anime.title.english || anime.title.romaji) : "Detail Anime";
-    const posterImg = anime?.coverImage?.large || "";
-    const bannerImg = anime?.bannerImage || posterImg;
-    const synopsisText = anime?.description ? anime.description.replace(/<[^>]*>?/gm, '') : 'Sinopsis tidak tersedia.';
-    const genresList = anime?.genres || ['Anime'];
-    const studioName = anime?.studios?.nodes?.[0]?.name || 'Unknown Studio';
+    const response = await axios.post(ANILIST_URL, { query, variables }, { timeout: 8000 });
+    const anime = response.data?.data?.Media;
 
-    const totalEp = anime?.nextAiringEpisode 
+    if (!anime) throw new Error("Detail anime tidak ditemukan");
+
+    const animeIdStr = anime.id.toString();
+    const titleText = anime.title.english || anime.title.romaji;
+    const posterImg = anime.coverImage?.large || "";
+    const bannerImg = anime.bannerImage || posterImg;
+    const synopsisText = anime.description ? anime.description.replace(/<[^>]*>?/gm, '') : 'Sinopsis belum tersedia.';
+    const genresList = anime.genres || ['Anime'];
+    const studioName = anime.studios?.nodes?.[0]?.name || 'Unknown Studio';
+
+    const totalEp = anime.nextAiringEpisode 
       ? anime.nextAiringEpisode.episode - 1 
-      : (anime?.episodes || 12);
+      : (anime.episodes || 12);
 
     const episodeList = [];
     const count = Math.max(1, totalEp);
     for (let i = count; i >= 1; i--) {
       episodeList.push({
-        id: `${animeId}-ep-${i}`,
-        endpoint: `${animeId}-ep-${i}`,
-        slug: `${animeId}-ep-${i}`,
+        id: `${animeIdStr}-ep-${i}`,
+        endpoint: `${animeIdStr}-ep-${i}`,
+        slug: `${animeIdStr}-ep-${i}`,
         title: `Episode ${i}`,
         name: `Episode ${i}`,
         judul: `Episode ${i}`,
@@ -162,9 +188,9 @@ const handleDetail = async (req, res) => {
     }
 
     const detailData = {
-      id: animeId.toString(),
-      endpoint: animeId.toString(),
-      slug: animeId.toString(),
+      id: animeIdStr,
+      endpoint: animeIdStr,
+      slug: animeIdStr,
       title: titleText,
       judul: titleText,
       anime_title: titleText,
@@ -177,11 +203,11 @@ const handleDetail = async (req, res) => {
       synopsis: synopsisText,
       sinopsis: synopsisText,
       description: synopsisText,
-      status: anime?.status || 'Ongoing',
+      status: anime.status || 'Ongoing',
       type: 'TV',
-      rating: anime?.averageScore ? `${anime.averageScore} / 100` : '8.0',
-      score: anime?.averageScore ? `${anime.averageScore}` : '8.0',
-      skor: anime?.averageScore ? `${anime.averageScore}` : '8.0',
+      rating: anime.averageScore ? `${anime.averageScore} / 100` : '8.0',
+      score: anime.averageScore ? `${anime.averageScore}` : '8.0',
+      skor: anime.averageScore ? `${anime.averageScore}` : '8.0',
       studio: studioName,
       genres: genresList,
       genre: genresList.join(', '),
@@ -191,21 +217,13 @@ const handleDetail = async (req, res) => {
       list_episode: episodeList
     };
 
-    res.json({
-      status: true,
-      data: detailData
-    });
+    res.json({ status: true, data: detailData });
 
   } catch (error) {
     res.json({
-      status: true,
-      data: {
-        id: "1",
-        title: "Detail Anime",
-        poster: "",
-        synopsis: "Sinopsis tidak tersedia",
-        episodes: []
-      }
+      status: false,
+      message: error.message,
+      data: null
     });
   }
 };
@@ -215,7 +233,7 @@ app.get('/api/detail/:id', handleDetail);
 app.get('/api/anime/:id', handleDetail);
 app.get('/api/anime/detail/:id', handleDetail);
 
-// 4. ENDPOINT STREAM
+// 4. ENDPOINT STREAM / EPISODE
 app.get(['/api/stream', '/api/episode', '/api/episode/:id', '/api/stream/:id'], (req, res) => {
   res.json({
     status: true,
