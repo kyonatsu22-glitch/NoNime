@@ -5,10 +5,10 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Endpoint Ongoing Anime (Mengambil 50-100 anime dengan AniList GraphQL super cepat)
+// 1. ENDPOINT ONGOING
 app.get('/api/ongoing', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 50; // default 50 anime
+    const limit = parseInt(req.query.limit) || 50;
 
     const query = `
       query ($perPage: Int) {
@@ -34,18 +34,12 @@ app.get('/api/ongoing', async (req, res) => {
     const response = await axios.post('https://graphql.anilist.co', {
       query: query,
       variables: { perPage: limit }
-    }, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      timeout: 8000
-    });
+    }, { timeout: 8000 });
 
     const animeList = response.data?.data?.Page?.media || [];
 
     const results = animeList.map(item => ({
-      id: `https://anilist.co/anime/${item.id}`,
+      id: item.id.toString(), // ID dikirim berupa String ID AniList
       title: item.title.english || item.title.romaji,
       posterUrl: item.coverImage.large || '',
       episode: item.nextAiringEpisode 
@@ -53,18 +47,71 @@ app.get('/api/ongoing', async (req, res) => {
         : (item.episodes ? `Total Ep: ${item.episodes}` : 'Ongoing')
     }));
 
+    res.json({ status: true, total: results.length, data: results });
+
+  } catch (error) {
+    res.status(500).json({ status: false, message: error.message, data: [] });
+  }
+});
+
+// 2. ENDPOINT DETAIL ANIME (Agar Saat Kartu Diklik Tidak "Detail Gagal Dimuat")
+app.get('/api/detail', async (req, res) => {
+  try {
+    const animeId = parseInt(req.query.id);
+
+    if (!animeId) {
+      return res.status(400).json({ status: false, message: 'ID Anime wajib diisi' });
+    }
+
+    const query = `
+      query ($id: Int) {
+        Media (id: $id, type: ANIME) {
+          id
+          title {
+            romaji
+            english
+          }
+          coverImage {
+            large
+          }
+          bannerImage
+          description
+          status
+          episodes
+          genres
+          averageScore
+        }
+      }
+    `;
+
+    const response = await axios.post('https://graphql.anilist.co', {
+      query: query,
+      variables: { id: animeId }
+    }, { timeout: 8000 });
+
+    const anime = response.data?.data?.Media;
+
+    if (!anime) {
+      throw new Error("Detail anime tidak ditemukan");
+    }
+
     res.json({
       status: true,
-      total: results.length,
-      data: results
+      data: {
+        id: anime.id.toString(),
+        title: anime.title.english || anime.title.romaji,
+        posterUrl: anime.coverImage.large,
+        bannerUrl: anime.bannerImage || anime.coverImage.large,
+        synopsis: anime.description ? anime.description.replace(/<[^>]*>?/gm, '') : 'Tidak ada sinopsis',
+        status: anime.status,
+        episodes: anime.episodes || 'Ongoing',
+        rating: anime.averageScore ? `${anime.averageScore} / 100` : 'N/A',
+        genres: anime.genres || []
+      }
     });
 
   } catch (error) {
-    res.status(500).json({
-      status: false,
-      message: 'Gagal mengambil data anime: ' + error.message,
-      data: []
-    });
+    res.status(500).json({ status: false, message: 'Gagal memuat detail: ' + error.message });
   }
 });
 
