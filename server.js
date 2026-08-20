@@ -7,12 +7,12 @@ app.use(cors());
 
 const ANILIST_URL = 'https://graphql.anilist.co';
 
-// Helper mengambil data anime khusus NON-HENTAI (isAdult: false) & Anti Duplikat
+// Helper mengambil data anime ONGOING khusus MURNI ANIME TV (No Shorts, No Hentai, No Infinite Kids Show)
 async function fetchUniqueAniList(status, limit) {
   const query = `
     query ($page: Int, $perPage: Int) {
       Page(page: $page, perPage: $perPage) {
-        media(status: ${status}, type: ANIME, isAdult: false, sort: POPULARITY_DESC) {
+        media(status: ${status}, type: ANIME, format: TV, isAdult: false, sort: POPULARITY_DESC) {
           id
           title { romaji english }
           coverImage { large }
@@ -36,7 +36,8 @@ async function fetchUniqueAniList(status, limit) {
 
     const uniqueMap = new Map();
     [...list1, ...list2].forEach(item => {
-      if (item && item.id && !uniqueMap.has(item.id)) {
+      // Saring anime dengan episode sangat panjang seperti Shin-Chan (>200 ep)
+      if (item && item.id && !uniqueMap.has(item.id) && (!item.episodes || item.episodes < 200)) {
         uniqueMap.set(item.id, item);
       }
     });
@@ -47,22 +48,26 @@ async function fetchUniqueAniList(status, limit) {
   }
 }
 
-// 1. ENDPOINT ONGOING (70 Anime TV Resmi & Non-Hentai)
+// 1. ENDPOINT ONGOING (70 Anime TV Resmi & Non-Shorts)
 app.get(['/api/ongoing', '/api/ongoing/page/:page'], async (req, res) => {
   try {
     const rawData = await fetchUniqueAniList('RELEASING', 70);
-    const results = rawData.map(item => ({
-      id: item.id.toString(),
-      endpoint: item.id.toString(),
-      slug: item.id.toString(),
-      title: item.title.english || item.title.romaji,
-      poster: item.coverImage.large || '',
-      posterUrl: item.coverImage.large || '',
-      thumb: item.coverImage.large || '',
-      episode: item.nextAiringEpisode 
-        ? `Episode ${item.nextAiringEpisode.episode}` 
-        : (item.episodes ? `Total Ep: ${item.episodes}` : 'Ongoing')
-    }));
+    const results = rawData.map(item => {
+      const currentEp = item.nextAiringEpisode 
+        ? item.nextAiringEpisode.episode - 1 
+        : (item.episodes || 'Ongoing');
+
+      return {
+        id: item.id.toString(),
+        endpoint: item.id.toString(),
+        slug: item.id.toString(),
+        title: item.title.english || item.title.romaji,
+        poster: item.coverImage.large || '',
+        posterUrl: item.coverImage.large || '',
+        thumb: item.coverImage.large || '',
+        episode: typeof currentEp === 'number' && currentEp > 0 ? `Episode ${currentEp}` : 'Ongoing'
+      };
+    });
 
     res.json({ status: true, total: results.length, data: results });
   } catch (error) {
@@ -70,7 +75,7 @@ app.get(['/api/ongoing', '/api/ongoing/page/:page'], async (req, res) => {
   }
 });
 
-// 2. ENDPOINT UPCOMING (30 Anime Murni Akan Datang)
+// 2. ENDPOINT UPCOMING (30 Anime Akan Datang)
 app.get(['/api/upcoming', '/api/upcoming/page/:page'], async (req, res) => {
   try {
     const rawData = await fetchUniqueAniList('NOT_YET_RELEASED', 30);
@@ -97,20 +102,30 @@ app.get(['/api/upcoming', '/api/upcoming/page/:page'], async (req, res) => {
   }
 });
 
-// 3. ENDPOINT DETAIL ANIME (Pencarian Fleksibel ID / Judul -> Anti Cowboy Bebop Bug)
+// 3. ENDPOINT DETAIL ANIME (Presisi Sesuai Anime yang Diklik)
 const handleDetail = async (req, res) => {
   try {
-    let rawParam = req.params.id || req.query.id || req.query.endpoint || req.query.url || req.query.slug || '';
-    rawParam = decodeURIComponent(rawParam).trim();
+    const queryParams = [
+      req.params.id,
+      req.query.id,
+      req.query.endpoint,
+      req.query.slug,
+      req.query.url,
+      req.query.title,
+      req.query.search
+    ];
 
-    const cleanIdMatch = rawParam.match(/\d+/);
+    let targetInput = queryParams.find(p => p && p.toString().trim() !== '') || '';
+    targetInput = decodeURIComponent(targetInput.toString()).trim();
+
+    const cleanIdMatch = targetInput.match(/\d+/);
     const numericId = cleanIdMatch ? parseInt(cleanIdMatch[0]) : null;
 
     let query = '';
     let variables = {};
 
-    if (numericId) {
-      // Cari berdasarkan ID Angka AniList
+    if (numericId && numericId > 10) {
+      // Kueri berdasarkan ID AniList
       query = `
         query ($id: Int) {
           Media (id: $id, type: ANIME, isAdult: false) {
@@ -130,7 +145,7 @@ const handleDetail = async (req, res) => {
       `;
       variables = { id: numericId };
     } else {
-      // Jika Flutter mengirim Judul/Teks, cari berdasarkan Nama Anime
+      // Kueri pencarian Judul jika Flutter mengirim teks/judul
       query = `
         query ($search: String) {
           Media (search: $search, type: ANIME, isAdult: false) {
@@ -148,7 +163,7 @@ const handleDetail = async (req, res) => {
           }
         }
       `;
-      variables = { search: rawParam || "Anime" };
+      variables = { search: targetInput || "Ongoing" };
     }
 
     const response = await axios.post(ANILIST_URL, { query, variables }, { timeout: 8000 });
@@ -164,13 +179,19 @@ const handleDetail = async (req, res) => {
     const genresList = anime.genres || ['Anime'];
     const studioName = anime.studios?.nodes?.[0]?.name || 'Unknown Studio';
 
-    const totalEp = anime.nextAiringEpisode 
-      ? anime.nextAiringEpisode.episode - 1 
-      : (anime.episodes || 12);
+    // Hitung episode terbaru yang sedang berlangsung
+    let latestEpNumber = 12;
+    if (anime.nextAiringEpisode && anime.nextAiringEpisode.episode) {
+      latestEpNumber = anime.nextAiringEpisode.episode - 1;
+    } else if (anime.episodes) {
+      latestEpNumber = anime.episodes;
+    }
 
+    if (latestEpNumber <= 0) latestEpNumber = 1;
+
+    // Buat daftar episode dari yang terbaru ke episode 1
     const episodeList = [];
-    const count = Math.max(1, totalEp);
-    for (let i = count; i >= 1; i--) {
+    for (let i = latestEpNumber; i >= 1; i--) {
       episodeList.push({
         id: `${animeIdStr}-ep-${i}`,
         endpoint: `${animeIdStr}-ep-${i}`,
