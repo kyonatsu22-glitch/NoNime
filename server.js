@@ -6,52 +6,42 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Domain Samehadaku
 const BASE_URL = 'https://samehadaku.email';
-
-// Header lengkap agar tidak terdeteksi bot/terblokir
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-  'Referer': BASE_URL
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 };
 
-// 1. Endpoint Ongoing Anime
+// 1. Endpoint Ongoing Anime (Tembus Cloudflare via RSS Feed)
 app.get('/api/ongoing', async (req, res) => {
   try {
-    let htmlData = '';
-    
-    // Coba ambil dari halaman anime-terbaru, jika gagal coba halaman utama
-    try {
-      const resTerbaru = await axios.get(`${BASE_URL}/anime-terbaru/`, { headers: HEADERS, timeout: 10000 });
-      htmlData = resTerbaru.data;
-    } catch (err) {
-      const resHome = await axios.get(`${BASE_URL}/`, { headers: HEADERS, timeout: 10000 });
-      htmlData = resHome.data;
-    }
+    const response = await axios.get(`${BASE_URL}/feed/`, { 
+      headers: HEADERS,
+      timeout: 10000 
+    });
 
-    const $ = cheerio.load(htmlData);
+    const $ = cheerio.load(response.data, { xmlMode: true });
     const results = [];
 
-    // Menjangkau semua kemungkinan elemen list anime Samehadaku
-    $('.post-show ul li, .animepost, article.animposx, .relat .animposx, .listupd article, .widget_senpai_recent_posts ul li').each((_, el) => {
-      const title = $(el).find('.entry-title, .title, .data .title, h2, h3').first().text().trim();
-      const link = $(el).find('a').first().attr('href') || '';
-      
-      // Mengambil URL gambar/poster (termasuk jika memakai lazy load)
-      const poster = $(el).find('img').attr('src') || 
-                     $(el).find('img').attr('data-src') || 
-                     $(el).find('img').attr('data-lazy-src') || '';
+    $('item').each((_, el) => {
+      const title = $(el).find('title').text().trim();
+      const link = $(el).find('link').text().trim();
+      const content = $(el).find('content\\:encoded').text() || $(el).find('description').text();
 
-      const episode = $(el).find('.ep, .epl, .spt, .dtla .epx').first().text().trim();
+      // Cari URL poster dari tag img di dalam deskripsi
+      const imgMatch = content.match(/src=["'](.*?)["']/);
+      const posterUrl = imgMatch ? imgMatch[1] : '';
+
+      // Ekstrak info episode dari judul
+      const epMatch = title.match(/Episode\s+(\d+)/i);
+      const episode = epMatch ? `Episode ${epMatch[1]}` : 'Ep Terbaru';
 
       if (title && link) {
         results.push({
           id: link.replace(BASE_URL, ''),
           title: title,
-          posterUrl: poster,
-          episode: episode || 'Ep Terbaru',
+          posterUrl: posterUrl,
+          episode: episode,
         });
       }
     });
@@ -62,7 +52,6 @@ app.get('/api/ongoing', async (req, res) => {
   }
 });
 
-// Root check
 app.get('/', (req, res) => {
   res.send('Server Scraper Anime Aktif!');
 });
