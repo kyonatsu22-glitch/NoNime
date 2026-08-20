@@ -5,20 +5,52 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Endpoint Ongoing Anime (Limit 85 agar respons instan dan bebas 504 Timeout)
+// Endpoint Ongoing Anime (Mengambil 50-100 anime dengan AniList GraphQL super cepat)
 app.get('/api/ongoing', async (req, res) => {
   try {
-    const response = await axios.get('https://api.jikan.moe/v4/seasons/now?limit=85', {
+    const limit = parseInt(req.query.limit) || 50; // default 50 anime
+
+    const query = `
+      query ($perPage: Int) {
+        Page(page: 1, perPage: $perPage) {
+          media(status: RELEASING, type: ANIME, sort: POPULARITY_DESC) {
+            id
+            title {
+              romaji
+              english
+            }
+            coverImage {
+              large
+            }
+            episodes
+            nextAiringEpisode {
+              episode
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await axios.post('https://graphql.anilist.co', {
+      query: query,
+      variables: { perPage: limit }
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
       timeout: 8000
     });
 
-    const animeList = response.data?.data || [];
+    const animeList = response.data?.data?.Page?.media || [];
 
     const results = animeList.map(item => ({
-      id: item.url,
-      title: item.title,
-      posterUrl: item.images?.jpg?.large_image_url || item.images?.jpg?.image_url || '',
-      episode: item.episodes ? `Episode ${item.episodes}` : 'Ongoing'
+      id: `https://anilist.co/anime/${item.id}`,
+      title: item.title.english || item.title.romaji,
+      posterUrl: item.coverImage.large || '',
+      episode: item.nextAiringEpisode 
+        ? `Episode ${item.nextAiringEpisode.episode}` 
+        : (item.episodes ? `Total Ep: ${item.episodes}` : 'Ongoing')
     }));
 
     res.json({
