@@ -6,49 +6,58 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-const BASE_URL = 'https://samehadaku.email';
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-};
-
-// 1. Endpoint Ongoing Anime (Tembus Cloudflare via RSS Feed)
+// 1. Endpoint Ongoing Anime
 app.get('/api/ongoing', async (req, res) => {
   try {
-    const response = await axios.get(`${BASE_URL}/feed/`, { 
-      headers: HEADERS,
-      timeout: 10000 
+    // COBA SOURCING UTAMA: Otakudesu / Samehadaku
+    const response = await axios.get('https://otakudesu.cloud/ongoing-anime/', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+      },
+      timeout: 8000
     });
 
-    const $ = cheerio.load(response.data, { xmlMode: true });
+    const $ = cheerio.load(response.data);
     const results = [];
 
-    $('item').each((_, el) => {
-      const title = $(el).find('title').text().trim();
-      const link = $(el).find('link').text().trim();
-      const content = $(el).find('content\\:encoded').text() || $(el).find('description').text();
-
-      // Cari URL poster dari tag img di dalam deskripsi
-      const imgMatch = content.match(/src=["'](.*?)["']/);
-      const posterUrl = imgMatch ? imgMatch[1] : '';
-
-      // Ekstrak info episode dari judul
-      const epMatch = title.match(/Episode\s+(\d+)/i);
-      const episode = epMatch ? `Episode ${epMatch[1]}` : 'Ep Terbaru';
+    $('.vencontent .listupd .article, .vencontent .listupd .detal').each((_, el) => {
+      const title = $(el).find('.jtitle, .thumbz h2').text().trim();
+      const link = $(el).find('a').first().attr('href') || '';
+      const poster = $(el).find('img').attr('src') || '';
+      const episode = $(el).find('.epz, .epzti').text().trim();
 
       if (title && link) {
         results.push({
-          id: link.replace(BASE_URL, ''),
+          id: link,
           title: title,
-          posterUrl: posterUrl,
-          episode: episode,
+          posterUrl: poster,
+          episode: episode || 'Ep Terbaru'
         });
       }
     });
 
-    res.json({ status: true, total: results.length, data: results });
-  } catch (e) {
-    res.status(500).json({ status: false, message: e.message, data: [] });
+    // Jika scraper berhasil dapat data, tampilkan
+    if (results.length > 0) {
+      return res.json({ status: true, total: results.length, data: results });
+    }
+
+    throw new Error("Scraper kosong, beralih ke API Cadangan");
+
+  } catch (error) {
+    // FALLBACK (CADANGAN): Mengambil dari API Anime Publik jika web terblokir
+    try {
+      const fallbackRes = await axios.get('https://api.jikan.moe/v4/seasons/now?limit=20');
+      const fallbackData = fallbackRes.data.data.map(item => ({
+        id: item.url,
+        title: item.title,
+        posterUrl: item.images.jpg.large_image_url || item.images.jpg.image_url,
+        episode: item.episodes ? `Episode ${item.episodes}` : 'Ongoing'
+      }));
+
+      return res.json({ status: true, total: fallbackData.length, data: fallbackData });
+    } catch (err) {
+      return res.status(500).json({ status: false, message: 'Gagal mengambil data anime', data: [] });
+    }
   }
 });
 
@@ -58,3 +67,4 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+module.exports = app;
