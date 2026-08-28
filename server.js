@@ -5,267 +5,129 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-const ANILIST_URL = 'https://graphql.anilist.co';
+// Root test
+app.get('/', (req, res) => {
+  res.send('Server Scraper Anime Aktif');
+});
 
-// Helper mengambil data 70 ANIME ONGOING MURNI (Anti Duplikat & Bebas Kids/Hentai)
-async function fetchOngoingAnime(limit = 70) {
+// Endpoint untuk mendapatkan daftar Anime Ongoing (SFW)
+app.get('/api/ongoing', async (req, res) => {
   const query = `
     query ($page: Int, $perPage: Int) {
       Page(page: $page, perPage: $perPage) {
         media(status: RELEASING, type: ANIME, isAdult: false, sort: POPULARITY_DESC) {
           id
-          title { romaji english }
-          coverImage { large }
+          title {
+            romaji
+            english
+          }
+          coverImage {
+            large
+          }
+          nextAiringEpisode {
+            episode
+          }
           episodes
-          nextAiringEpisode { episode }
-          startDate { year month day }
-          genres
         }
       }
     }
   `;
 
   try {
-    const req1 = axios.post(ANILIST_URL, { query, variables: { page: 1, perPage: 50 } }, { timeout: 8000 });
-    const req2 = axios.post(ANILIST_URL, { query, variables: { page: 2, perPage: 50 } }, { timeout: 8000 });
-
-    const [res1, res2] = await Promise.all([req1, req2]);
-    const list1 = res1.data?.data?.Page?.media || [];
-    const list2 = res2.data?.data?.Page?.media || [];
-
-    const uniqueMap = new Map();
-    [...list1, ...list2].forEach(item => {
-      if (!item || !item.id) return;
-      const isKidsShow = item.genres && item.genres.includes('Kids');
-      const isLongShow = item.episodes && item.episodes > 150;
-
-      if (!uniqueMap.has(item.id) && !isKidsShow && !isLongShow) {
-        uniqueMap.set(item.id, item);
-      }
+    const response = await axios.post('https://graphql.anilist.co', {
+      query: query,
+      variables: { page: 1, perPage: 50 }
     });
 
-    return Array.from(uniqueMap.values()).slice(0, limit);
-  } catch (error) {
-    return [];
-  }
-}
-
-// 1. ENDPOINT ONGOING (70 ANIME ONGOING)
-app.get(['/api/ongoing', '/api/ongoing/page/:page'], async (req, res) => {
-  try {
-    const rawData = await fetchOngoingAnime(70);
-    const results = rawData.map(item => {
-      const currentEp = item.nextAiringEpisode 
+    const list = response.data.data.Page.media.map(item => {
+      const epNum = item.nextAiringEpisode 
         ? item.nextAiringEpisode.episode - 1 
         : (item.episodes || 'Ongoing');
-
       return {
         id: item.id.toString(),
-        endpoint: item.id.toString(),
-        slug: item.id.toString(),
         title: item.title.english || item.title.romaji,
-        poster: item.coverImage.large || '',
-        posterUrl: item.coverImage.large || '',
-        thumb: item.coverImage.large || '',
-        episode: typeof currentEp === 'number' && currentEp > 0 ? `Episode ${currentEp}` : 'Ongoing'
+        poster: item.coverImage.large,
+        episode: `Episode ${epNum > 0 ? epNum : '1'}`
       };
     });
 
-    res.json({ status: true, total: results.length, data: results });
+    res.json({ status: 'success', data: list });
   } catch (error) {
-    res.json({ status: false, message: error.message, data: [] });
+    console.error('Error fetching AniList:', error);
+    res.status(500).json({ status: 'error', message: 'Gagal mengambil data' });
   }
 });
 
-// 2. ENDPOINT UPCOMING
-app.get(['/api/upcoming', '/api/upcoming/page/:page'], async (req, res) => {
-  try {
-    const rawData = await fetchOngoingAnime(70);
-    const results = rawData.map(item => ({
-      id: item.id.toString(),
-      endpoint: item.id.toString(),
-      slug: item.id.toString(),
-      title: item.title.english || item.title.romaji,
-      poster: item.coverImage.large || '',
-      posterUrl: item.coverImage.large || '',
-      thumb: item.coverImage.large || '',
-      episode: 'Ongoing'
-    }));
-
-    res.json({ status: true, total: results.length, data: results });
-  } catch (error) {
-    res.json({ status: false, message: error.message, data: [] });
-  }
-});
-
-// 3. ENDPOINT DETAIL ANIME (DENGAN PAS 60 EPISODE & DIRECT SAMEHADAKU LINK)
-const handleDetail = async (req, res) => {
-  try {
-    const rawParam = req.params.id || req.query.id || req.query.endpoint || req.query.slug || req.query.url || '';
-    const cleanStr = decodeURIComponent(rawParam.toString()).trim();
-    const cleanIdMatch = cleanStr.match(/\d+/);
-    const animeId = cleanIdMatch ? parseInt(cleanIdMatch[0]) : null;
-
-    let query = '';
-    let variables = {};
-
-    if (animeId && animeId > 10) {
-      query = `
-        query ($id: Int) {
-          Media (id: $id, type: ANIME) {
-            id
-            title { romaji english }
-            coverImage { large }
-            bannerImage
-            description
-            status
-            genres
-            averageScore
-            studios { nodes { name } }
+// Endpoint Detail Anime
+app.get('/api/detail/:id', async (req, res) => {
+  const animeId = req.params.id;
+  const query = `
+    query ($id: Int) {
+      Media(id: $id) {
+        id
+        title {
+          romaji
+          english
+        }
+        coverImage {
+          extraLarge
+        }
+        description
+        status
+        studios(isMain: true) {
+          nodes {
+            name
           }
         }
-      `;
-      variables = { id: animeId };
-    } else {
-      query = `
-        query ($search: String) {
-          Media (search: $search, type: ANIME) {
-            id
-            title { romaji english }
-            coverImage { large }
-            bannerImage
-            description
-            status
-            genres
-            averageScore
-            studios { nodes { name } }
-          }
+        episodes
+        nextAiringEpisode {
+          episode
         }
-      `;
-      variables = { search: cleanStr || "Anime" };
+      }
     }
+  `;
 
-    let anime = null;
-    try {
-      const response = await axios.post(ANILIST_URL, { query, variables }, { timeout: 8000 });
-      anime = response.data?.data?.Media;
-    } catch (e) {
-      console.log('AniList query fail');
-    }
+  try {
+    const response = await axios.post('https://graphql.anilist.co', {
+      query: query,
+      variables: { id: parseInt(animeId) }
+    });
 
-    const animeIdStr = anime ? anime.id.toString() : (animeId ? animeId.toString() : "1");
-    const titleText = anime ? (anime.title.english || anime.title.romaji) : "Detail Anime";
-    const posterImg = anime?.coverImage?.large || "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/default.jpg";
-    const bannerImg = anime?.bannerImage || posterImg;
-    const synopsisText = anime?.description ? anime.description.replace(/<[^>]*>?/gm, '') : 'Sinopsis belum tersedia.';
-    const genresList = anime?.genres || ['Anime'];
-    const studioName = anime?.studios?.nodes?.[0]?.name || 'Samehadaku';
+    const media = response.data.data.Media;
+    const totalEp = media.nextAiringEpisode 
+      ? media.nextAiringEpisode.episode - 1 
+      : (media.episodes || 12);
 
-    // MEMBUAT TEPAT 60 EPISODE (DARI EP 60 SAMPAI EP 1)
-    const episodeList = [];
-    for (let i = 60; i >= 1; i--) {
-      episodeList.push({
-        id: `${animeIdStr}-ep-${i}`,
-        endpoint: `${animeIdStr}-ep-${i}`,
-        slug: `${animeIdStr}-ep-${i}`,
+    const episodes = [];
+    for (let i = totalEp; i >= 1; i--) {
+      episodes.push({
         title: `Episode ${i}`,
-        name: `Episode ${i}`,
-        judul: `Episode ${i}`,
-        episode: `Episode ${i}`,
-        date: 'Terbaru',
-        uploaded: 'Terbaru',
-        // Mengarahkan ke Samehadaku.li
-        streamUrl: 'https://samehadaku.li',
-        url: 'https://samehadaku.li',
-        link: 'https://samehadaku.li',
-        webUrl: 'https://samehadaku.li'
+        episode: i
       });
     }
 
-    const detailObj = {
-      id: animeIdStr,
-      endpoint: animeIdStr,
-      slug: animeIdStr,
-      title: titleText,
-      judul: titleText,
-      anime_title: titleText,
-      poster: posterImg,
-      posterUrl: posterImg,
-      thumb: posterImg,
-      thumbnail: posterImg,
-      cover: posterImg,
-      bannerUrl: bannerImg,
-      synopsis: synopsisText,
-      sinopsis: synopsisText,
-      description: synopsisText,
-      status: anime?.status || 'Ongoing',
-      type: 'TV',
-      rating: anime?.averageScore ? `${anime.averageScore} / 100` : '8.0',
-      score: anime?.averageScore ? `${anime.averageScore}` : '8.0',
-      skor: anime?.averageScore ? `${anime.averageScore}` : '8.0',
-      studio: studioName,
-      genres: genresList,
-      genre: genresList.join(', '),
-      episodes: episodeList,
-      episode_list: episodeList,
-      episodeList: episodeList,
-      list_episode: episodeList
-    };
-
-    res.json({ status: true, data: detailObj });
-
-  } catch (error) {
-    // Fallback darurat agar Flutter tidak pernah menampilkan "Detail Gagal Dimuat"
-    const fallbackEpisodes = [];
-    for (let i = 60; i >= 1; i--) {
-      fallbackEpisodes.push({
-        id: `ep-${i}`,
-        title: `Episode ${i}`,
-        judul: `Episode ${i}`,
-        streamUrl: 'https://samehadaku.li',
-        url: 'https://samehadaku.li',
-        link: 'https://samehadaku.li'
-      });
-    }
+    const studioName = media.studios.nodes.length > 0 ? media.studios.nodes[0].name : '-';
 
     res.json({
-      status: true,
+      status: 'success',
       data: {
-        id: "1",
-        title: "Detail Anime",
-        poster: "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/default.jpg",
-        synopsis: "Gagal memuat detail otomatis.",
-        episodes: fallbackEpisodes,
-        episode_list: fallbackEpisodes
+        id: media.id.toString(),
+        title: media.title.english || media.title.romaji,
+        poster: media.coverImage.extraLarge,
+        synopsis: media.description ? media.description.replace(/<[^>]*>?/gm, '') : 'Sinopsis tidak tersedia.',
+        status: media.status,
+        studio: studioName,
+        episodes: episodes
       }
     });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: 'Gagal mengambil detail' });
   }
-};
-
-app.get('/api/detail', handleDetail);
-app.get('/api/detail/:id', handleDetail);
-app.get('/api/anime/:id', handleDetail);
-app.get('/api/anime/detail/:id', handleDetail);
-
-// 4. ENDPOINT STREAM / EPISODE (LANGSUNG LEMPAR KE SAMEHADAKU.LI)
-app.get(['/api/stream', '/api/episode', '/api/episode/:id', '/api/stream/:id'], (req, res) => {
-  res.json({
-    status: true,
-    data: {
-      streamUrl: 'https://samehadaku.li',
-      url: 'https://samehadaku.li',
-      link: 'https://samehadaku.li',
-      webUrl: 'https://samehadaku.li',
-      iframeUrl: 'https://samehadaku.li',
-      downloadLinks: [
-        { quality: 'Samehadaku Web', url: 'https://samehadaku.li' }
-      ]
-    }
-  });
 });
 
-app.get('/', (req, res) => res.send('Server Scraper Anime Aktif!'));
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server berjalan di port ${PORT}`);
+});
+
 module.exports = app;
